@@ -1,0 +1,9 @@
+# Keep dataset folder structure in git, but ignore local raw data files.
+*
+
+# Keep git metadata and optional docs/split manifests.
+!.gitignore
+!README.md
+!train.txt
+!val.txt
+!test.txt
