@@ -1,188 +1,242 @@
-# Fire & Smoke Project
+# Fire & Smoke Detection Toolkit (PyTorch)
 
-Dự án hỗ trợ hai hướng xử lý:
+A practical PyTorch project for fire/smoke analysis on images and videos.
 
-- **Nhánh 1: CNN Classification + Grad-CAM**
-- **Nhánh 2: Faster R-CNN Object Detection (Bounding Box)**
+This repository includes two pipelines:
 
-Tài liệu này dùng **đường dẫn tương đối** để có thể chạy trên nhiều máy, chỉ cần đứng tại thư mục gốc project.
+1. **Multi-label image classification** (`fire`, `smoke`) with optional Grad-CAM overlays.
+2. **Object detection** (bounding boxes) using Faster R-CNN trained from YOLO-format labels.
 
-## 1) Cấu trúc thư mục chính
+The code is designed to run on CPU, CUDA, and Apple Silicon (`mps`) when available.
+
+## Key Features
+
+- End-to-end training and inference for fire/smoke **classification**.
+- End-to-end training and inference for fire/smoke **detection**.
+- CSV builders for multiple dataset layouts:
+  - Class-folder datasets (`only_fire`, `only_smoke`, `fire_and_smoke`, `none`)
+  - YOLO labels + split files (`train.txt`, `val.txt`, `test.txt`)
+- Frame-level video inference with temporal smoothing.
+- Optional Grad-CAM visualization for classifier predictions.
+- Training logs and artifact export (`best.pt`, `last.pt`, metrics/history CSV/JSON).
+
+## Repository Structure
 
 ```text
-fire_smoke_cnn_project/
-├── dataset/
-│   ├── train/
-│   │   ├── images/
-│   │   └── labels/
-│   └── test/
-│       ├── images/
-│       └── labels/
-├── input/
-│   ├── img/
-│   └── vid/
-├── runs/
-├── predictions/
-├── src/
-├── requirements.txt
-└── README.md
+Fire_Smoke_R_CNN/
+  src/
+    train.py
+    predict_image.py
+    predict_video.py
+    train_faster_rcnn.py
+    predict_image_faster_rcnn.py
+    predict_video_faster_rcnn.py
+    build_csv_from_class_folders.py
+    build_csv_from_yolo_splits.py
+    build_csv_from_yolo_dirs.py
+  data_csv/                    # Generated classification CSV files (train/val/test)
+  dataset/                     # Local dataset working folder (ignored by git except split manifests)
+  input/                       # Example input assets
+  predictions/                 # Inference outputs
+  runs/                        # Training artifacts
+  requirements.txt
+  README.md
 ```
 
-## 2) Cài đặt môi trường
+## Installation
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Kiểm tra nhanh PyTorch:
+### Optional: Verify device backend
 
 ```bash
 python - <<'PY'
 import torch
-print("torch:", torch.__version__)
-print("mps available:", torch.backends.mps.is_available())
-print("cuda available:", torch.cuda.is_available())
+print('torch:', torch.__version__)
+print('mps available:', torch.backends.mps.is_available())
+print('cuda available:', torch.cuda.is_available())
 PY
 ```
 
-## 3) Nhánh 1 - CNN Classification + Grad-CAM
+## Pipeline A: Multi-Label Classification
 
-### Bước 1: Tạo CSV classification từ nhãn YOLO hiện có
+### 1) Prepare CSV files
+
+Expected CSV schema:
+
+- `path` (image path, relative or absolute)
+- `fire` (0/1)
+- `smoke` (0/1)
+
+#### Option A: Build CSV from class folders
 
 ```bash
-python src/build_csv_from_yolo_dirs.py \
-  --dataset-root dataset \
-  --output-dir data_csv \
-  --fire-class-ids 0 \
-  --smoke-class-ids 1 \
-  --val-ratio 0.15 \
-  --seed 42
+python src/build_csv_from_class_folders.py \
+  --dataset-root /path/to/dataset_root \
+  --output-dir data_csv
 ```
 
-Sinh ra:
+Supported class folder keywords include:
 
-- `data_csv/train.csv`
-- `data_csv/val.csv`
-- `data_csv/test.csv`
+- `only_fire`, `fire_only` -> `(fire=1, smoke=0)`
+- `only_smoke`, `smoke_only` -> `(fire=0, smoke=1)`
+- `fire_and_smoke`, `both`, `fire_smoke` -> `(1, 1)`
+- `none`, `normal`, `background`, `no_fire_no_smoke` -> `(0, 0)`
 
-### Bước 2: Train CNN
+Split folders are inferred from names such as `train`, `val`, `validation`, `test`, etc.
+
+#### Option B: Build CSV from YOLO split files
+
+```bash
+python src/build_csv_from_yolo_splits.py \
+  --dataset-root /path/to/dataset_root \
+  --train-list /path/to/dataset_root/train.txt \
+  --val-list /path/to/dataset_root/val.txt \
+  --test-list /path/to/dataset_root/test.txt \
+  --fire-class-ids 0 \
+  --smoke-class-ids 1 \
+  --output-dir data_csv
+```
+
+### 2) Train classifier
 
 ```bash
 python src/train.py \
   --train-csv data_csv/train.csv \
   --val-csv data_csv/val.csv \
-  --dataset-root dataset \
+  --dataset-root /path/to/dataset_root \
   --output-dir runs/dfire_cnn \
   --model-name resnet18 \
   --epochs 20 \
-  --batch-size 16
+  --batch-size 16 \
+  --image-size 224 \
+  --lr 1e-4
 ```
 
-Model tốt nhất:
+Supported classifier backbones:
 
-- `runs/dfire_cnn/best.pt`
+- `resnet18` (default)
+- `resnet34`
+- `mobilenet_v3_small`
 
-### Bước 3: Predict ảnh + Grad-CAM
+### 3) Predict on images
 
 ```bash
 python src/predict_image.py \
   --checkpoint runs/dfire_cnn/best.pt \
-  --input input/img \
-  --recursive \
-  --grad-cam \
-  --cam-target both \
-  --output-dir predictions/cnn_gradcam_images
+  --input /path/to/image_or_folder \
+  --output-dir predictions/images \
+  --recursive
 ```
 
-### Bước 4: Predict video + Grad-CAM
+Optional Grad-CAM:
+
+```bash
+python src/predict_image.py \
+  --checkpoint runs/dfire_cnn/best.pt \
+  --input /path/to/image_or_folder \
+  --output-dir predictions/images_cam \
+  --recursive \
+  --grad-cam \
+  --cam-target both
+```
+
+### 4) Predict on videos
 
 ```bash
 python src/predict_video.py \
   --checkpoint runs/dfire_cnn/best.pt \
-  --input input/vid/video.mp4 \
-  --output predictions/cnn_gradcam_video.mp4 \
-  --grad-cam
+  --input /path/to/video.mp4 \
+  --output predictions/demo_out.mp4
 ```
 
-## 4) Nhánh 2 - Faster R-CNN Detection (BBox)
+Useful options:
 
-`train_faster_rcnn.py` cần `train.txt` và `val.txt`. Dataset hiện tại chỉ có thư mục `train/` và `test/`, nên cần tạo các file danh sách này.
+- `--frame-stride 2` for faster processing
+- `--alpha 0.8` for EMA smoothing
+- `--min-consecutive 3` to reduce flicker/false alarms
+- `--grad-cam` to overlay heatmaps
+- `--display` for live preview (optional)
 
-### Bước 1: Tạo `train.txt`, `val.txt`, `test.txt` (đường dẫn tương đối)
+### Classification outputs
+
+Typical files under `runs/<exp_name>/`:
+
+- `best.pt`
+- `last.pt`
+- `history.csv`
+- `best_metrics.json`
+- `config.json`
+
+Visualization helper:
 
 ```bash
-python - <<'PY'
-from pathlib import Path
-import random
-
-seed = 42
-val_ratio = 0.15
-root = Path("dataset")
-
-train_imgs = sorted((root / "train" / "images").glob("*"))
-train_imgs = [p for p in train_imgs if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}]
-
-random.Random(seed).shuffle(train_imgs)
-n_val = max(1, int(len(train_imgs) * val_ratio))
-val_imgs = train_imgs[:n_val]
-train_imgs = train_imgs[n_val:]
-
-def to_rel(p: Path) -> str:
-    return str(p.relative_to(root)).replace("\\", "/")
-
-(root / "train.txt").write_text("\n".join(to_rel(p) for p in train_imgs) + "\n", encoding="utf-8")
-(root / "val.txt").write_text("\n".join(to_rel(p) for p in val_imgs) + "\n", encoding="utf-8")
-
-test_imgs = sorted((root / "test" / "images").glob("*"))
-test_imgs = [p for p in test_imgs if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}]
-(root / "test.txt").write_text("\n".join(to_rel(p) for p in test_imgs) + "\n", encoding="utf-8")
-
-print("Done:", root / "train.txt", root / "val.txt", root / "test.txt")
-print("Train:", len(train_imgs), "Val:", len(val_imgs), "Test:", len(test_imgs))
-PY
+python src/plot_history.py --history runs/dfire_cnn/history.csv
 ```
 
-### Bước 2: Train Faster R-CNN
+## Pipeline B: Faster R-CNN Detection
+
+This pipeline trains and runs bounding-box detection from YOLO labels.
+
+### 1) Train detector
 
 ```bash
 python src/train_faster_rcnn.py \
-  --dataset-root dataset \
-  --train-list dataset/train.txt \
-  --val-list dataset/val.txt \
+  --dataset-root /path/to/dataset_root \
+  --train-list /path/to/dataset_root/train.txt \
+  --val-list /path/to/dataset_root/val.txt \
   --class-names fire,smoke \
   --output-dir runs/faster_rcnn \
   --epochs 20 \
   --batch-size 2
 ```
 
-Model tốt nhất:
-
-- `runs/faster_rcnn/best.pt`
-
-### Bước 3: Predict ảnh (vẽ bbox)
+### 2) Predict on images
 
 ```bash
 python src/predict_image_faster_rcnn.py \
   --checkpoint runs/faster_rcnn/best.pt \
-  --input input/img \
+  --input /path/to/image_or_folder \
+  --output-dir predictions/faster_rcnn_images \
   --recursive \
-  --output-dir predictions/faster_rcnn_images
+  --score-threshold 0.40 \
+  --nms-iou 0.50
 ```
 
-### Bước 4: Predict video (vẽ bbox)
+### 3) Predict on videos
 
 ```bash
 python src/predict_video_faster_rcnn.py \
   --checkpoint runs/faster_rcnn/best.pt \
-  --input input/vid/video.mp4 \
-  --output predictions/faster_rcnn_video_out.mp4
+  --input /path/to/video.mp4 \
+  --output predictions/faster_rcnn_video_out.mp4 \
+  --score-threshold 0.40 \
+  --nms-iou 0.50
 ```
 
-## 5) Ghi chú vận hành
+Detector inference exports:
 
-- Nếu class id của dataset khác mặc định, chỉnh lại tham số `--fire-class-ids` và `--smoke-class-ids` ở bước tạo CSV.
-- Faster R-CNN nặng hơn CNN classification, nên bắt đầu với `--batch-size 1` hoặc `2`.
-- Nếu lỗi codec khi ghi `.mp4`, đổi output sang `.avi`.
+- Annotated images/videos
+- Per-image/per-frame summary CSV
+- Full detection CSV (box coordinates, class, score)
+
+## Dataset Notes
+
+- `dataset/` is intended as a local workspace for raw data and split files.
+- Keep heavyweight raw images/labels outside git history.
+- Use generated CSVs in `data_csv/` for classification training.
+
+## Troubleshooting
+
+- If `.mp4` writing fails, try `.avi` output.
+- If `mps` is unavailable on Apple Silicon, update macOS/PyTorch and recreate the virtual environment.
+- If `torch`/`torchvision` mismatch errors appear, reinstall both packages in the same environment.
+
+## License
+
+Add your preferred license (for example MIT) before publishing publicly.
